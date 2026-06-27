@@ -6,3 +6,4 @@ __pycache__/
 .pytest_cache/
 *.npz
 data/baseline_weights.json
+.*
