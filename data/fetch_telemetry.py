@@ -14,7 +14,7 @@ CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache')
 class StraightSegment:
     s: float # distance along the straight
     v: float # speed at the straight segment
-    u_expect: float # expected speed at the straight segment
+    u_expert: float # expected speed at the straight segment
     d_braking: float # distance to braking point
     v_norm: float # normalized speed (v / V_MAX)
     d_norm: float # normalized distance (d_braking / STRAIGHT_LENGTH)
@@ -55,10 +55,10 @@ def extract_straight(tel: pd.DataFrame,
     for i in range(braking_start):
         s = distance[i]
         v = speed_ms[i]
-        u_expect = u_raw[i]
+        u_expert = u_raw[i]
         d_braking = d_braking_ref - s
 
-        u_history.append(u_expect)
+        u_history.append(u_expert)
         if len(u_history) > A_RECENT_WINDOW:
             u_history.pop(0)
         a_recent = float(np.mean(u_history)) if len(u_history) == A_RECENT_WINDOW else 0.0
@@ -67,7 +67,7 @@ def extract_straight(tel: pd.DataFrame,
             StraightSegment(
                 s=float(s),
                 v=float(v),
-                u_expect=float(u_expect),
+                u_expert=float(u_expert),
                 d_braking=float(d_braking),
                 v_norm=float(v / v_max),
                 d_norm=float(d_braking / straight_length),
@@ -117,7 +117,7 @@ def load_straight_data(year: int = 2023,
         all_laps.append(segs)
         v_setpoints.extend([s.v for s in segs])
         v_corners.extend([s.v for s in segs if s.d_braking < 50]) 
-        
+
     # Calculate mean speeds
     v_setpoint = float(np.mean(v_setpoints)) if v_setpoints else 0.0
     v_corner = float(np.mean(v_corners)) if v_corners else 0.0
