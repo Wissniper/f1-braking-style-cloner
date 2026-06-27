@@ -78,3 +78,48 @@ def extract_straight(tel: pd.DataFrame,
     return segments
 
 
+def load_straight_data(year: int = 2023,
+                       gp: str = 'Monza',
+                       driver: str = 'HAM',
+                       session_type: str = 'R') -> tuple[list[list[StraightSegment]], float, float]:
+    """
+    Fetch telemetry data via fastf1, extract straights, cache as .npz.
+
+    Returns (laps, v_setpoint, v_corner):
+      laps: list of laps, each a list of StraightSegment
+      v_setpoint: mean straight speed across all laps (m/s)
+      v_corner: mean braking-zone entry speed across all laps (m/s)
+    """
+
+    # Ensure cache directory exists
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(CACHE_DIR, f"{year}_{gp}_{driver}_{session_type}.npz")
+
+    ff1.Cache.enable_cache(CACHE_DIR)
+    session = ff1.get_session(year, gp, session_type)
+    session.load(telemetry=True)
+    laps_df = session.laps.pick_driver(driver).pick_quicklaps()
+
+
+    # Extract straights for each lap
+    all_laps : list[list[StraightSegment]] = []
+    v_setpoints, v_corners = [], []
+
+    for _, lap in laps_df.iterlaps():
+        try:
+            tel = lap.get_telemetry()
+        except Exception as e:
+            print(f"Error fetching telemetry for lap {lap['LapNumber']}: {e}")
+            continue
+        segs = extract_straight(tel)
+        if len(segs) < 10:
+            continue
+        all_laps.append(segs)
+        v_setpoints.extend([s.v for s in segs])
+        v_corners.extend([s.v for s in segs if s.d_braking < 50]) 
+        
+    # Calculate mean speeds
+    v_setpoint = float(np.mean(v_setpoints)) if v_setpoints else 0.0
+    v_corner = float(np.mean(v_corners)) if v_corners else 0.0
+
+    return all_laps, v_setpoint, v_corner
