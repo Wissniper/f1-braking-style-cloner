@@ -1,0 +1,8 @@
+fastf1>=3.3
+casadi>=3.6
+torch>=2.2
+optuna>=3.6
+numpy>=1.26
+matplotlib>=3.8
+pandas>=2.2
+pytest>=8.0
