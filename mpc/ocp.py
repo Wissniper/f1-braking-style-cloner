@@ -123,3 +123,51 @@ def build_ocp(dt: float = DT,
     solver._n_u = n_u
 
     return solver
+
+def solve(solver: ca.Function,
+          weights: np.ndarray,
+          state: dict,
+          context: dict,
+          soft: bool = True) -> tuple[float, dict]:
+    
+    """
+    Run one IPOPT solve. Returns (u_star, kkt_data)
+    """
+
+    # Unpack state and context
+    p_val = np.array([
+        weights[0], weights[1], weights[2], # w_j, w_s, w_a
+        state["s0"], state["v0"],
+        context["v_setpoint"], context["v_corner"],
+    ])
+
+    lbx = list(solver._lbx)
+    ubx = list(solver._ubx)
+
+    if not soft:
+        # If soft constraints are disabled, set slack upper variable bounds to 0 (forces slacks to 0)
+        N = solver._n_u
+        for i in range(N, solver._n_dec):
+            ubx[i] = 0.0
+
+    x0 = np.zeros(solver._n_dec)
+    sol = solver(x0=x0,
+                 p=p_val,
+                 lbx=lbx,
+                 ubx=ubx,
+                 lbg=solver._lbg,
+                 ubg=solver._ubg)
+    
+    x_opt = np.array(sol["x"]).flatten()  # type: ignore[index]
+    u_star = float(x_opt[0]) # u_0, the control applied at this time
+
+    kkt_data = {
+        "lam_x": np.array(sol["lam_x"]).flatten(),  # type: ignore[index]
+        "lam_g": np.array(sol["lam_g"]).flatten(),  # type: ignore[index]
+        "x_opt": x_opt,
+        "solver": solver,
+        "weights": weights,
+        "state": state,
+        "context": context,
+    }
+    return u_star, kkt_data
