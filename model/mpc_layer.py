@@ -64,3 +64,75 @@ class MPCSolve(torch.autograd.Function):
         grad_w = torch.tensor(grad_w_np.flatten(), dtype=ctx.weights_dtype)
 
         return grad_w, None, None, None, None # None for solver, state, context, soft
+    
+def verify_bridge(solver,
+                    state: dict | None = None,
+                    context: dict | None = None) -> None:
+    
+    """
+    Run torch.autograd.gradcheck on MPCSolve.
+    Raises if gradients are wrong
+    """
+
+    if state is None:
+        state = {"s0": 0.0, "v0": 80.0}
+    if context is None:
+        context = {"v_setpoint": 80.0, "v_corner": 55.0}
+
+    weights = torch.tensor(
+        [1.0, 1.0, 1.0],
+        dtype = torch.float64,
+        requires_grad=True
+    )
+
+    def fn(w):
+        """
+        A wrapper to isolate the differentiable input.
+
+        gradcheck can only probe inputs that are tensors with requires_grad=True.
+        But MPCSolve.apply takes 5 arguments — only w (the weights) is differentiable.
+        Wrapping it in fn hides the non-differentiable arguments (solver, state, context, True)
+        so gradcheck only sees w.
+
+        .unsqueeze(0) promotes the scalar output from shape () to (1,).
+        gradcheck requires at least 1D output.
+        """
+        return MPCSolve.apply(w, solver, state, context, True).unsqueeze(0)
+
+    """
+    gradcheck validates your hand-written backward by comparing it against numerical finite differences:
+
+        ∂u*/∂w_i  ≈  (fn(w + ε·eᵢ) - fn(w - ε·eᵢ)) / 2ε
+
+    It does this for each weight w_i in turn, then checks the result matches what backward returns.
+
+    ┌────────────┬────────────────────┬───────────────────────────────────────────────────────────────────────┐
+    │  Argument  │       Value        │                                Meaning                                │
+    ├────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────┤
+    │ fn         │ the wrapper        │ function to test                                                      │
+    ├────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────┤
+    │ (weights,) │ tuple              │ inputs to probe — must match fn's arguments                           │
+    ├────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────┤
+    │ eps=1e-4   │ perturbation size  │ how much to nudge each weight for finite diff                         │
+    ├────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────┤
+    │ atol=1e-2  │ absolute tolerance │ max allowed absolute difference between analytical and numerical grad │
+    ├────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────┤
+    │ rtol=1e-2  │ relative tolerance │ max allowed relative difference                                       │
+    └────────────┴────────────────────┴───────────────────────────────────────────────────────────────────────┘
+
+    The tolerances are looser than gradcheck's defaults (1e-5) because the OCP solver
+    introduces small numerical noise — tight tolerances would give false failures.
+
+    Your backward is hand-written (it uses the KKT Jacobian, not PyTorch's autograd).
+    gradcheck is the standard way to verify it's correct before training.
+    If it passes, you can trust the gradients flowing back into the MLP are accurate.
+    """
+    passed = torch.autograd.gradcheck(fn, (weights,), eps=1e-4, atol=1e-2, rtol=1e-2)
+    assert passed, "gradcheck failed, bridge gradients are incorrect"
+    print("Bridge gradcheck PASSED.")
+
+if __name__ == "__main__":
+    solver = build_ocp()
+    verify_bridge(solver)
+
+
