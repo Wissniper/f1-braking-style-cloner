@@ -23,5 +23,5 @@ class CostWeightMLP(nn.Module):
             nn.ReLU(),                          # enforce non-negativity, cost weights must be ≥ 0
         )
     
-
-
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x).clamp(1e-3, 100.0)
