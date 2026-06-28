@@ -82,3 +82,20 @@ def fd_check(solver,
         J[0, i] = (u_plus - u_minus) / (2 * eps)
 
     return J
+
+def assert_jacobian_valid(kkt_data: dict,
+                          tol: float=1e-3) -> None:
+    """
+    Assert KKT Jacobian matches FD. Call when DEBUG_GRAD=1.
+    """
+
+    J_kkt = compute_jacobian(kkt_data)
+    J_fd = fd_check(
+        kkt_data["solver"],
+        kkt_data["weights"],
+        kkt_data["state"],
+        kkt_data["context"]
+    )
+
+    err = np.max(np.abs(J_kkt - J_fd))
+    assert err < tol, f"Jacobian mismatch: max error {err:.2e} > {tol:.2e}"
