@@ -1,15 +1,19 @@
-import os
 import numpy as np
 import casadi as ca
 from mpc.ocp import solve as ocp_solve
 
 def compute_jacobian(kkt_data: dict) -> np.ndarray:
     """
-    Compute ∂u_0*/∂[w_j, w_s, w_a] via CasADi parametric NLP sensitivity.
+    Compute ∂u_0*/∂[w_j, w_s, w_a] via KKT implicit differentiation.
 
-    Uses the KKT system: at optimality, the sensitivity of primal variables
-    w.r.t. parameters is obtained by differentiating the stationarity conditions.
-    CasADi's nlpsol exposes this via the 'sens' factory.
+    At the optimal KKT point the stationarity condition holds:
+        ∇_x L(x*, λ*, p) = 0
+
+    Differentiating with respect to p gives the linear system:
+        (∂²L/∂x²) · (∂x*/∂p) = -(∂²L/∂x∂p)
+        ∂x*/∂p = -H⁻¹ · K
+
+    where H = ∂²L/∂x² and K = ∂²L/∂x∂p are evaluated at (x*, λ*, p).
 
     Returns shape (1, 3).
     """
@@ -28,33 +32,41 @@ def compute_jacobian(kkt_data: dict) -> np.ndarray:
         context["v_setpoint"], context["v_corner"],
     ])
 
-    # Build the sensitivity function once and cache it on the solver object.
-    # solver.factory() derives a new CasADi function from the NLP's internal
-    # symbolic graph — the construction is expensive, but the resulting fn is cheap to call.
-    if not hasattr(solver, "_sens_fn"):
-        sens = solver.factory(
-            "sens",                            # arbitrary label for this derived fn
-            ["x0", "p", "lam_x0", "lam_g0"],  # inputs: full KKT point (primals + duals)
-            ["jac:x:p"],                       # output: ∂x*/∂p via implicit diff of KKT
-        )
-        # lam_x0 / lam_g0 (dual variables) are required inputs because the sensitivity
-        # formula  ∂x*/∂p = -(∇²_xx L)⁻¹ · ∇²_xp L  depends on the Hessian of the
-        # Lagrangian ∇²_xx L, which itself depends on λ*. Without them CasADi cannot
-        # evaluate the linear system.
-        solver._sens_fn = sens
+    # Build H and K evaluation functions once and cache on the solver object.
+    # The symbolic expressions were stored on the solver by build_ocp().
+    if not hasattr(solver, "_H_fn"):
+        x_sym   = solver._x_sym
+        p_sym   = solver._p_sym
+        f_sym   = solver._f_sym
+        g_sym   = solver._g_sym
 
-    # Evaluate sensitivity at the current KKT point.
-    # "jac:x:p" returns a dense matrix of shape (n_dec, n_params=7).
-    res = solver._sens_fn(
-        x0=x_opt,
-        p=p_val,
-        lam_x0=lam_x,
-        lam_g0=lam_g,
-    )
-    
-    # We want row 0 (u_0), columns 0:3 (w_j, w_s, w_a)
-    jac_full = np.array(res["jac_x_p"])
-    return jac_full[0:1, 0:3] # shape (1,3)
+        n_dec = x_sym.shape[0]
+        n_g   = g_sym.shape[0]
+
+        lam_g_sym = ca.MX.sym("lam_g", n_g)    # type: ignore[arg-type]
+        lam_x_sym = ca.MX.sym("lam_x", n_dec)  # type: ignore[arg-type]
+
+        # Lagrangian: L = f + λ_g' g + λ_x' x
+        # (box-constraint duals enter as λ_x' x because lbx ≤ x ≤ ubx)
+        L = f_sym + ca.dot(lam_g_sym, g_sym) + ca.dot(lam_x_sym, x_sym)
+
+        grad_L = ca.gradient(L, x_sym)          # ∂L/∂x, shape (n_dec,)
+        H = ca.jacobian(grad_L, x_sym)          # ∂²L/∂x²,  shape (n_dec, n_dec)
+        K = ca.jacobian(grad_L, p_sym)          # ∂²L/∂x∂p, shape (n_dec, n_p)
+
+        solver._H_fn = ca.Function("H", [x_sym, p_sym, lam_g_sym, lam_x_sym], [H])  # type: ignore[call-arg]
+        solver._K_fn = ca.Function("K", [x_sym, p_sym, lam_g_sym, lam_x_sym], [K])  # type: ignore[call-arg]
+
+    # Evaluate H and K at the current KKT point (x*, λ_g*, λ_x*, p)
+    H_val = np.array(solver._H_fn(x_opt, p_val, lam_g, lam_x))
+    K_val = np.array(solver._K_fn(x_opt, p_val, lam_g, lam_x))
+
+    # Solve H · (∂x*/∂p) = -K.
+    # H is positive-definite here: objective is strongly convex in x,
+    # and the constraint Jacobians are linear so ∂²g/∂x² = 0.
+    dxdp = np.linalg.solve(H_val, -K_val)   # shape (n_dec, n_p)
+
+    return dxdp[0:1, 0:3]  # shape (1, 3): ∂u_0*/∂[w_j, w_s, w_a]
 
 
 def fd_check(solver,

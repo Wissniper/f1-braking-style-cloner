@@ -122,6 +122,13 @@ def build_ocp(dt: float = DT,
     solver._n_dec = n_dec
     solver._n_u = n_u
 
+    # Store symbolic NLP expressions for KKT sensitivity in compute_jacobian.
+    # sensitivity.py needs these to build H = ∂²L/∂x² and K = ∂²L/∂x∂p.
+    solver._x_sym = x
+    solver._p_sym = p
+    solver._f_sym = J
+    solver._g_sym = ca.vertcat(*g)
+
     return solver
 
 def solve(solver: ca.Function,
