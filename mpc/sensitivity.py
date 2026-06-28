@@ -57,3 +57,28 @@ def compute_jacobian(kkt_data: dict) -> np.ndarray:
     return jac_full[0:1, 0:3] # shape (1,3)
 
 
+def fd_check(solver,
+             weights: np.ndarray,
+             state: dict,
+             context: dict,
+             eps: float = 1e-4) -> np.ndarray:
+    
+    """
+    Finite-difference Jacobian ∂u_0*/∂weights. Shape (1, 3).
+
+    Used to validate compute_jacobian(). Not used in the training loop.
+    """
+
+    J = np.zeros((1, 3))
+    for i in range(3):
+        w_plus = weights.copy()
+        w_plus[i] += eps
+        u_plus, _ = ocp_solve(solver, w_plus, state, context)
+
+        w_minus = weights.copy()
+        w_minus[i] -= eps
+        u_minus, _ = ocp_solve(solver, w_minus, state, context)
+
+        J[0, i] = (u_plus - u_minus) / (2 * eps)
+
+    return J
