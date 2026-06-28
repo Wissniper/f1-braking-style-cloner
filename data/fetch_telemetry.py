@@ -41,9 +41,11 @@ def extract_straight(tel: pd.DataFrame,
         return []  # No braking points found
     braking_start = brake_idx[0]
 
-    # Signed acceleration from throttle and brake inputs
-    # throttle maps to [0, u_max], brake maps to [u_min, 0], where u_max and u_min are the maximum and minimum acceleration values
-    u_raw = throttle * 10.0 - brake * 50.0 # This is a simplified model; in reality, the mapping would depend on the car's characteristics
+    # Signed acceleration from throttle and brake inputs.
+    # FastF1 Throttle is 0-100 (percentage), so divide by 100 to get 0-1 before scaling.
+    # FastF1 Brake is boolean 0/1, so no division needed.
+    # Result u_raw is in m/s²: full throttle → +10, full brake → -50.
+    u_raw = (throttle / 100.0) * 10.0 - brake * 50.0
 
     d_braking_ref = distance[braking_start]
 
