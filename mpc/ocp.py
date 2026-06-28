@@ -150,6 +150,43 @@ def solve(solver: ca.Function,
         for i in range(N, solver._n_dec):
             ubx[i] = 0.0
 
+    """
+    The inputs you pass (x0, p, lbx, ubx, lbg, ubg) are what IPOPT needs to solve:
+
+    ┌─────────┬─────────────────────────────────────────────────────────────────────────┐
+    │  Input  │                                  Role                                   │
+    ├─────────┼─────────────────────────────────────────────────────────────────────────┤
+    │ x0      │ initial guess for x (all zeros here)                                    │
+    ├─────────┼─────────────────────────────────────────────────────────────────────────┤
+    │ p       │ concrete parameter values (w_j, w_s, w_a, s0, v0, v_setpoint, v_corner) │
+    ├─────────┼─────────────────────────────────────────────────────────────────────────┤
+    │ lbx/ubx │ box bounds on decision variables                                        │
+    ├─────────┼─────────────────────────────────────────────────────────────────────────┤
+    │ lbg/ubg │ bounds on constraints g                                                 │
+    └─────────┴─────────────────────────────────────────────────────────────────────────┘
+    
+    CasADi's nlpsol always returns a fixed set of keys in sol:
+
+    ┌─────────┬───────────────────────────────────────────────────┐
+    │   Key   │                      Content                      │
+    ├─────────┼───────────────────────────────────────────────────┤
+    │ "x"     │ optimal decision variables                        │
+    ├─────────┼───────────────────────────────────────────────────┤
+    │ "f"     │ optimal objective value                           │
+    ├─────────┼───────────────────────────────────────────────────┤
+    │ "g"     │ constraint values at the optimum                  │
+    ├─────────┼───────────────────────────────────────────────────┤
+    │ "lam_x" │ Lagrange multipliers for box bounds on x          │
+    ├─────────┼───────────────────────────────────────────────────┤
+    │ "lam_g" │ Lagrange multipliers for constraints g            │
+    ├─────────┼───────────────────────────────────────────────────┤
+    │ "lam_p" │ Lagrange multipliers for parameters (rarely used) │
+    └─────────┴───────────────────────────────────────────────────┘
+
+    lam_x and lam_g are always present regardless of whether your problem has active constraints —
+    IPOPT computes them as part of solving the KKT system, so they come for free.
+    """
+
     x0 = np.zeros(solver._n_dec)
     sol = solver(x0=x0,
                  p=p_val,
@@ -161,6 +198,38 @@ def solve(solver: ca.Function,
     x_opt = np.array(sol["x"]).flatten()  # type: ignore[index]
     u_star = float(x_opt[0]) # u_0, the control applied at this time
 
+    """
+    lam_x and lam_g are Lagrange multipliers — IPOPT returns them alongside the optimal x.
+    They come from the KKT conditions (first-order optimality conditions for the NLP).
+
+    lam_g: one multiplier per constraint in g (length 2*(N+1), two per velocity state)
+        It answers: "how much would the optimal cost change if I tightened this constraint slightly?"
+        - lam_g[i] = 0    → constraint i is inactive (not tight), has no effect on the cost
+        - lam_g[i] != 0   → constraint i is active (tight), relaxing it would change the optimal cost
+
+    lam_x: one multiplier per element of x (length n_dec = N + 2*(N+1))
+        Same idea but for the box constraints lbx <= x <= ubx.
+        Every element of x has a box constraint: lbx[i] <= x[i] <= ubx[i].
+        lam_x[i] tells you whether element i is stuck against one of its bounds at the optimal solution.
+        - lam_x[i] = 0    → x[i] landed strictly between its bounds, the bounds aren't restricting it
+        - lam_x[i] != 0   → x[i] is pinned to its lower or upper bound, the bound is actively forcing it there
+
+        For controls (u_0..u_{N-1}, bounds [-50, 10]):
+            IPOPT wants u_3 = -60 (brake harder) but can't — it gets clamped to -50.
+            lam_x[3] != 0 signals the physical limit is active at that step.
+
+        For slacks (slack_lo, slack_hi, bounds [0, inf]):
+            If v_k >= 0 (no violation): optimal slack is 0, pinned to its lower bound → lam_x[...] != 0
+            If v_k < 0  (violation):    slack lifts off zero to absorb it             → lam_x[...] = 0
+            So for slacks it's the opposite of what you might expect — non-zero lam_x means the
+            constraint was NOT violated (slack at zero), zero lam_x means it WAS violated (slack lifted).
+
+    sensitivity.py uses both to compute du*/dw — the gradient of the optimal control with
+    respect to the MLP weights — via KKT implicit differentiation:
+        ∂u*/∂w = -(∂²L/∂x²)⁻¹ · (∂²L/∂x∂w)
+    The Lagrangian L = J + lam_g·g + lam_x·x requires these multipliers to be evaluated.
+    Without them you cannot differentiate through the solver.
+    """
     kkt_data = {
         "lam_x": np.array(sol["lam_x"]).flatten(),  # type: ignore[index]
         "lam_g": np.array(sol["lam_g"]).flatten(),  # type: ignore[index]
